@@ -20,9 +20,9 @@ def main():
     nalu_list = h264_nalu_reader.read_nalu_from_file(h264_path)
     h264_nalu_reader.nalu_list_print(nalu_list)
     
-    writer = mp4writer.MP4Writer(dst_path, 1280, 720, 16)
+    writer = mp4writer.MP4Writer(dst_path, 1280, 720, 16, 1000)
     for nalu in nalu_list:
-        tmpbuff = bytes([nalu["type"]])
+        tmpbuff = bytes([nalu["header"]])
         tmpbuff += nalu["payload"]
         writer.add_nalu(tmpbuff)
     writer.finalize()

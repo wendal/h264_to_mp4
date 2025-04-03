@@ -65,7 +65,7 @@ def parse_nalu(buffer, start_pos, start_code_len):
         nalu_payload = buffer[payload_start:next_start_pos]
         remaining_buffer = buffer[next_start_pos:]
     
-    return nalu_type, nalu_payload, remaining_buffer
+    return nalu_type, nalu_payload, remaining_buffer, nalu_header
 
 def read_nalu_from_file(file_path):
     """
@@ -84,13 +84,14 @@ def read_nalu_from_file(file_path):
             break
         
         # 解析NALU
-        nalu_type, nalu_payload, remaining_buffer = parse_nalu(buffer, start_pos, start_code_len)
+        nalu_type, nalu_payload, remaining_buffer, nalu_header = parse_nalu(buffer, start_pos, start_code_len)
         
         if nalu_type is not None:
             nalu_list.append({
                 'type': nalu_type,
                 'payload': nalu_payload,
-                'start_code_len': start_code_len
+                'start_code_len': start_code_len,
+                'header': nalu_header
             })
         
         # 更新缓冲区为剩余部分
@@ -107,6 +108,10 @@ def nalu_list_print(nalu_list):
             # size_sei += len(nalu['payload'])
             continue
         print(f"NALU {i+1}: Type={nalu_type_name(nalu['type'])}, Payload size={len(nalu['payload'])} bytes")
+        # if nalu['type'] in [7, 8] :
+        #     import hashlib
+        #     md5 = hashlib.md5(nalu['payload'])
+        #     print("SPS/PPS HEX", nalu["payload"].hex().upper(), md5.hexdigest())
     # 统计每种帧的大小
     nalu_sizes = {}
     nalu_counter = {}

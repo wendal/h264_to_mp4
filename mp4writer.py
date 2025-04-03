@@ -24,13 +24,16 @@ class MP4Writer:
         self.sample_offsets = []
         self.current_offset = 0
         self.nalu_buffer = []
+        self.i_frame_ids = []
         
         # 写入ftyp box
         self._write_ftyp()
         
         # 预留moov box位置(最后写入)
         self.moov_position = self.current_offset
-        self.current_offset += 8  # 先预留moov头部空间
+        self.current_offset += 16*1024 + 8  # 先预留moov空间+mdat头部
+        self.output.write(b'\x00' * (16*1024 + 8))
+        # print("当前位置估算", self.current_offset, "实际位置", self.output.tell())
     
     def _write_ftyp(self):
         """写入ftyp box"""
@@ -70,8 +73,10 @@ class MP4Writer:
                 raise ValueError("IDR frame found but SPS/PPS not available")
             
             # 如果是IDR帧或缓冲区达到一定大小，写入帧
-            if nalu_type == 5 or len(self.nalu_buffer) >= 10:
-                self._write_frame()
+            # if nalu_type == 5 or len(self.nalu_buffer) >= 10:
+            self._write_frame()
+            if nalu_type == 5 :
+                self.i_frame_ids.append(self.frame_count)
     
     def _write_frame(self):
         """将缓冲区的NALU写入为一个帧"""
@@ -80,6 +85,7 @@ class MP4Writer:
             
         # 记录样本信息
         self.sample_offsets.append(self.current_offset)
+        print("写入帧偏移量", "%08X" % self.current_offset, "帧大小", len(self.nalu_buffer[0]))
         
         # 计算帧大小(包括起始码和NALU)
         frame_size = 0
@@ -89,9 +95,9 @@ class MP4Writer:
         
         # 写入帧数据到mdat
         for nalu in self.nalu_buffer:
-            self.output.write(struct.pack('>I', 1))  # 起始码
+            self.output.write(struct.pack('>I', len(nalu)))  # 起始码
             self.output.write(nalu)
-            self.current_offset += 4 + len(nalu)
+            self.current_offset += self.output.tell()
         
         self.sample_sizes.append(frame_size)
         self.frame_count += 1
@@ -109,8 +115,8 @@ class MP4Writer:
     def _write_mvhd(self):
         """写入mvhd box(影片头)"""
         mvhd_data = struct.pack('>I', 0)  # version + flags
-        mvhd_data += struct.pack('>I', 0)  # creation time
-        mvhd_data += struct.pack('>I', 0)  # modification time
+        mvhd_data += struct.pack('>I', 1743651892)  # creation time
+        mvhd_data += struct.pack('>I', 1743651892)  # modification time
         mvhd_data += struct.pack('>I', self.timescale)  # timescale
         mvhd_data += struct.pack('>I', self.frame_count * self.frame_duration)  # duration
         mvhd_data += struct.pack('>I', 0x00010000)  # rate (1.0)
@@ -118,8 +124,15 @@ class MP4Writer:
         mvhd_data += struct.pack('>H', 0)  # reserved
         mvhd_data += struct.pack('>II', 0, 0)  # reserved
         mvhd_data += struct.pack('>iiiiiiiii',  # matrix
-            0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000)
-        mvhd_data += struct.pack('>I', 0)  # next track ID
+            0x10000, 0, 0, 0, 0x10000, 0, 0, 0, 0x10000)
+        mvhd_data += struct.pack(">I", 0) #preview time
+        mvhd_data += struct.pack(">I", 0) #preview duration
+        mvhd_data += struct.pack(">I", 0) #Poster time
+        mvhd_data += struct.pack(">I", 0) #Selection time
+        mvhd_data += struct.pack(">I", 0) #Selection duration
+        mvhd_data += struct.pack(">I", 0) #Current time
+
+        mvhd_data += struct.pack('>I', 2)  # next track ID
         
         return self._create_box('mvhd', mvhd_data)
     
@@ -211,6 +224,7 @@ class MP4Writer:
         """写入stbl box(采样表)"""
         stbl_data = self._write_stsd()
         stbl_data += self._write_stts()
+        stbl_data += self._write_stss()
         stbl_data += self._write_stsc()
         stbl_data += self._write_stsz()
         stbl_data += self._write_stco()
@@ -282,11 +296,19 @@ class MP4Writer:
         
         return self._create_box('stts', stts_data)
     
+    def _write_stss(self):
+        stss_data = struct.pack('>I', 0)  # version + flags
+        stss_data += struct.pack('>I', len(self.i_frame_ids))  # entry count
+        for i in self.i_frame_ids:
+            stss_data += struct.pack('>I', i)  # sample count/duration
+        
+        return self._create_box('stss', stss_data)
+    
     def _write_stsc(self):
         """写入stsc box(采样到chunk的映射)"""
         stsc_data = struct.pack('>I', 0)  # version + flags
         stsc_data += struct.pack('>I', 1)  # entry count
-        stsc_data += struct.pack('>III', 1, 1, 1)  # first chunk/samples per chunk/sample description index
+        stsc_data += struct.pack('>III', 1, self.frame_count, 1)  # first chunk/samples per chunk/sample description index
         
         return self._create_box('stsc', stsc_data)
     
@@ -304,10 +326,13 @@ class MP4Writer:
     def _write_stco(self):
         """写入stco box(chunk偏移)"""
         stco_data = struct.pack('>I', 0)  # version + flags
-        stco_data += struct.pack('>I', len(self.sample_offsets))  # entry count
+        # stco_data += struct.pack('>I', len(self.sample_offsets))  # entry count
         
-        for offset in self.sample_offsets:
-            stco_data += struct.pack('>I', offset)
+        # for offset in self.sample_offsets:
+            # stco_data += struct.pack('>I', offset)
+
+        stco_data += struct.pack('>I', 1)
+        stco_data += struct.pack('>I', self.sample_offsets[0])
         
         return self._create_box('stco', stco_data)
     
@@ -329,8 +354,27 @@ class MP4Writer:
         if self.frame_count == 0:
             raise ValueError("No frame data available for MP4 creation")
         
+        mdat_len = self.current_offset - self.moov_position - 16 * 1024 - 8
+        file_len = self.current_offset
+
         # 写入moov box
+        self.current_offset = self.moov_position
         self._write_moov()
+        moov_len = self.current_offset - self.moov_position
+        # moov_len = ((moov_len + 3) & ~3)  # 4字节对齐
+        # print("moov的大小", moov_len)
+
+        # 填充一个free
+        self.output.seek(self.moov_position + moov_len)
+        free_len = 16 * 1024 - moov_len
+        # print("输出一个free box", "大小", free_len)
+        self._write_box('free', b'\x00' * (free_len - 8))
+
+        # 计算mdat box大小
+        # print("mdat的大小是", mdat_len, "mdat头部写入的位置",  "%08X" % (self.moov_position + 16 * 1024,))
+        self.output.seek(self.moov_position + 16 * 1024)
+        self.output.write(struct.pack(">I", mdat_len + 8))
+        self.output.write(b'mdat')
         
         # 关闭文件
         if isinstance(self.output, io.IOBase):
