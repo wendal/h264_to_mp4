@@ -1,6 +1,5 @@
 import struct
 import io
-from collections import defaultdict
 
 class MP4Writer:
     def __init__(self, output_file, width, height, fps=30, timescale=1000):
@@ -23,7 +22,6 @@ class MP4Writer:
         self.frame_count = 0
         self.sample_sizes = []
         self.sample_offsets = []
-        self.sample_times = []
         self.current_offset = 0
         self.nalu_buffer = []
         
@@ -33,7 +31,7 @@ class MP4Writer:
         # 预留moov box位置(最后写入)
         self.moov_position = self.current_offset
         self.current_offset += 8  # 先预留moov头部空间
-        
+    
     def _write_ftyp(self):
         """写入ftyp box"""
         ftyp_data = b'ftyp'
@@ -81,7 +79,6 @@ class MP4Writer:
             return
             
         # 记录样本信息
-        self.sample_times.append(self.frame_count * self.frame_duration)
         self.sample_offsets.append(self.current_offset)
         
         # 计算帧大小(包括起始码和NALU)
@@ -104,7 +101,6 @@ class MP4Writer:
         """写入moov box"""
         moov_data = self._write_mvhd()
         moov_data += self._write_trak()
-        moov_data += self._write_mvex()
         
         # 更新moov box大小并写入
         self.output.seek(self.moov_position)
@@ -123,13 +119,7 @@ class MP4Writer:
         mvhd_data += struct.pack('>II', 0, 0)  # reserved
         mvhd_data += struct.pack('>iiiiiiiii',  # matrix
             0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000)
-        mvhd_data += struct.pack('>I', 0)  # preview time
-        mvhd_data += struct.pack('>I', 0)  # preview duration
-        mvhd_data += struct.pack('>I', 0)  # poster time
-        mvhd_data += struct.pack('>I', 0)  # selection time
-        mvhd_data += struct.pack('>I', 0)  # selection duration
-        mvhd_data += struct.pack('>I', 0)  # current time
-        mvhd_data += struct.pack('>I', 1)  # next track ID
+        mvhd_data += struct.pack('>I', 0)  # next track ID
         
         return self._create_box('mvhd', mvhd_data)
     
@@ -141,7 +131,7 @@ class MP4Writer:
     
     def _write_tkhd(self):
         """写入tkhd box(轨道头)"""
-        tkhd_data = struct.pack('>I', 0x0000000f)  # version + flags (enabled, in movie, in preview)
+        tkhd_data = struct.pack('>I', 0x00000007)  # version + flags (enabled, in movie)
         tkhd_data += struct.pack('>I', 0)  # creation time
         tkhd_data += struct.pack('>I', 0)  # modification time
         tkhd_data += struct.pack('>I', 1)  # track ID
@@ -154,7 +144,7 @@ class MP4Writer:
         tkhd_data += struct.pack('>H', 0)  # reserved
         tkhd_data += struct.pack('>iiiiiiiii',  # matrix
             0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000)
-        tkhd_data += struct.pack('>II', self.width << 16, self.height << 16)  # width/height (fixed-point)
+        tkhd_data += struct.pack('>II', self.width << 16, self.height << 16)  # width/height
         
         return self._create_box('tkhd', tkhd_data)
     
@@ -203,17 +193,19 @@ class MP4Writer:
     
     def _write_dinf(self):
         """写入dinf box(数据信息)"""
+        # data reference entry
         dref_data = struct.pack('>I', 0)  # version + flags
         dref_data += struct.pack('>I', 1)  # entry count
-        
-        # data reference entry
-        dref_data += struct.pack('>I', 12)  # entry size
-        dref_data += struct.pack('>I', 0)  # entry flags
-        dref_data += b'url '  # entry type
-        dref_data += struct.pack('>I', 0x00000001)  # entry flags (self-contained)
+
+        # dref_data += b'url '  # entry type
+        # dref_data += struct.pack('>I', 0x00000001)  # entry flags (self-contained)
+        url = struct.pack('>I', 1)  # version + flags
+        url_data = self._create_box('url ', url)
+        dref_data += url_data
         
         dinf_data = self._create_box('dref', dref_data)
-        return self._create_box('dinf', dinf_data)
+        data = self._create_box('dinf', dinf_data)
+        return data
     
     def _write_stbl(self):
         """写入stbl box(采样表)"""
@@ -227,7 +219,8 @@ class MP4Writer:
     def _write_stsd(self):
         """写入stsd box(采样描述)"""
         # AVC1描述
-        avc1_data = struct.pack('>H', 1)  # entry count
+        stsd_data = struct.pack('>I', 0)  # version + flags
+        stsd_data += struct.pack('>I', 1)  # entry count
         
         # AVC1 entry
         avc1_entry = struct.pack('>I', 0)  # reserved
@@ -235,7 +228,7 @@ class MP4Writer:
         avc1_entry += struct.pack('>H', 1)  # data reference index
         avc1_entry += struct.pack('>H', 0)  # pre-defined
         avc1_entry += struct.pack('>H', 0)  # reserved
-        avc1_entry += struct.pack('>IIII', 0, 0, 0, 0)  # pre-defined
+        avc1_entry += struct.pack('>III', 0, 0, 0)  # pre-defined
         avc1_entry += struct.pack('>HH', self.width, self.height)  # width/height
         avc1_entry += struct.pack('>I', 0x00480000)  # horiz resolution (72 dpi)
         avc1_entry += struct.pack('>I', 0x00480000)  # vert resolution (72 dpi)
@@ -244,14 +237,21 @@ class MP4Writer:
         avc1_entry += b'AVC Coding' + b'\x00' * 22  # compressor name (32 bytes)
         avc1_entry += struct.pack('>H', 0x0018)  # depth
         avc1_entry += struct.pack('>H', 0xffff)  # pre-defined
+
+        # print("AVC1固定头部的长度", len(avc1_entry))
+        # print("AVC1数据", avc1_entry.hex().upper())
         
         # AVC配置
         avcc_data = self._create_avcc()
+        # print("avcc数据", avcc_data.hex().upper())
         avc1_entry += self._create_box('avcC', avcc_data)
         
-        avc1_data += self._create_box('avc1', avc1_entry)
+        avc1_data = self._create_box('avc1', avc1_entry)
+        stsd_data += avc1_data
         
-        return self._create_box('stsd', avc1_data)
+        tmpdata = self._create_box('stsd', stsd_data)
+        # print("stsd数据", tmpdata.hex().upper())
+        return tmpdata
     
     def _create_avcc(self):
         """创建AVC配置记录"""
@@ -311,33 +311,8 @@ class MP4Writer:
         
         return self._create_box('stco', stco_data)
     
-    def _write_mvex(self):
-        """写入mvex box(电影扩展)"""
-        mvex_data = self._write_mehd()
-        mvex_data += self._write_trex()
-        return self._create_box('mvex', mvex_data)
-    
-    def _write_mehd(self):
-        """写入mehd box(电影扩展头)"""
-        mehd_data = struct.pack('>I', 0)  # version + flags
-        mehd_data += struct.pack('>I', self.frame_count * self.frame_duration)  # fragment duration
-        
-        return self._create_box('mehd', mehd_data)
-    
-    def _write_trex(self):
-        """写入trex box(轨道扩展)"""
-        trex_data = struct.pack('>I', 0)  # version + flags
-        trex_data += struct.pack('>I', 1)  # track ID
-        trex_data += struct.pack('>I', 1)  # default sample description index
-        trex_data += struct.pack('>I', 0)  # default sample duration
-        trex_data += struct.pack('>I', 0)  # default sample size
-        trex_data += struct.pack('>I', 0)  # default sample flags
-        
-        return self._create_box('trex', trex_data)
-    
     def _create_box(self, box_type, box_data):
         """创建一个box"""
-        print('创建盒子', box_type.encode('ascii'), len(box_data) + 8)
         return struct.pack('>I', 8 + len(box_data)) + box_type.encode('ascii') + box_data
     
     def finalize(self):
@@ -376,20 +351,3 @@ def nalu_to_mp4(input_nalus, output_file, width, height, fps=30):
         writer.add_nalu(nalu)
     
     writer.finalize()
-
-# 示例用法
-if __name__ == "__main__":
-    # 示例: 从文件中读取NALU并写入MP4
-    # 实际使用时需要替换为真实的NALU数据
-    example_nalus = [
-        # SPS
-        b'\x67\x42\x00\x1e\xa6\x02\x80\xbc\x08\x88\x00\x00\x03\x00\x02\x00\x00\x03\x00\x79\x08',
-        # PPS
-        b'\x68\xee\x3c\x80',
-        # IDR帧
-        b'\x65\x88\x84\x21\xa0\x0f\x08\x84\x42\x10\x80\x42\x10\x84\x20\x10',
-        # 其他帧...
-    ]
-    
-    # 转换为MP4 (假设视频分辨率为640x480，帧率30fps)
-    nalu_to_mp4(example_nalus, 'output.mp4', 640, 480, 30)
